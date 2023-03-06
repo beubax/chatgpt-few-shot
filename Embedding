@@ -1,0 +1,75 @@
+import csv
+from itertools import chain
+import os
+import openai
+from sentence_transformers import util
+ 
+openai.api_key = os.environ["OPENAI_API_KEY"]
+
+csv_path = 'Questions.csv'
+
+def create_embeddings(csv_path):
+    data = open(csv_path, 'r')
+    reader = csv.DictReader(data)
+    correct_embeddings = {}  
+    incorrect_embeddings = {}  
+    for i, row in enumerate(reader):
+        embedding = openai.Embedding.create(input = row.get('Question'),
+                                             engine = 'text-embedding-ada-002')['data'][0]['embedding']
+        if row.get('Grade 0/1') == "1":
+            correct_embeddings[i+1] = embedding
+        else:
+            incorrect_embeddings[i+1] = embedding
+
+    embeddings = [correct_embeddings, incorrect_embeddings]
+
+    return embeddings
+
+def cosine_similarity(correct_embeddings, incorrect_embeddings):
+
+    final_similarities = {}
+
+    for main_key, main_embedding in chain(correct_embeddings.items(), 
+                                          incorrect_embeddings.items()):
+        similar = {}
+        order = []
+        for key, embedding in correct_embeddings.items():
+            if key == main_key:
+                continue
+            similarity = util.cos_sim(main_embedding, embedding)
+            similar[key] = similarity
+        for key in dict(sorted(similar.items(), key=lambda similar: similar[1], reverse=True)).keys():
+            order.append(key)
+        final_similarities[main_key] = order
+
+    return final_similarities
+
+def few_shot(csv_path, final_similarities):
+    data = open(csv_path, 'r')
+    reader = csv.DictReader(data)
+    reader = list(reader)
+    for i, row in enumerate(reader):
+        if row.get('Grade 0/1') == "1":
+            print(final_similarities.get(i+1))
+        else:
+            few_shot_input = ''
+            k = 0
+            while(k < 3): 
+                similar_question = final_similarities.get(i+1)[k]
+                few_shot_input += reader[similar_question - 1].get('Question')
+                few_shot_input += reader[similar_question - 1].get('Solution')
+                k += 1
+            few_shot_input += row.get('Question')
+            few_shot_output = openai.Completion.create(engine = "code-davinci-002", 
+                                                        prompt = few_shot_input, 
+                                                        max_tokens = 256, 
+                                                        temperature = 0, 
+                                                        top_p = 0)['choices'][0]['text']
+            print("For Question " + str(i+1) + " the few shot output is " + few_shot_output)
+
+
+
+if __name__ == "__main__":  
+    [correct_embeddings, incorrect_embeddings] = create_embeddings(csv_path)   
+    final_similarities = cosine_similarity(correct_embeddings, incorrect_embeddings)     
+    few_shot(csv_path, final_similarities)
